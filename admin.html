@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Urus Stok</title>
+    <style>
+        body { font-family: sans-serif; background: #f0f2f5; padding: 20px; margin: 0; }
+        
+        .login-box { background: white; padding: 30px; border-radius: 10px; text-align: center; margin-top: 50px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .app-box { display: none; max-width: 600px; margin: 0 auto; }
+        
+        input, select { width: 100%; padding: 12px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
+        
+        button { width: 100%; padding: 12px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 1rem; transition: 0.2s; }
+        .btn-login { background: #2c3e50; color: white; }
+        .btn-save { background: #27ae60; color: white; margin-top: 10px; }
+        
+        .product-item { background: white; padding: 15px; margin-bottom: 10px; border-radius: 10px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .thumb-img { width: 50px; height: 50px; object-fit: cover; border-radius: 5px; background: #eee; margin-right: 10px; }
+        
+        .upload-area { border: 2px dashed #ccc; padding: 20px; text-align: center; background: #fff; border-radius: 8px; margin-bottom: 10px; cursor: pointer; }
+        
+        .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+
+    <div id="login-screen" class="login-box">
+        <h2>🔐 Login Admin</h2>
+        <p style="color:#777; font-size:0.9rem;">Masukkan Token GitHub Anda</p>
+        <input type="password" id="github-token" placeholder="Paste token ghp_...">
+        <button class="btn-login" onclick="login()">MASUK</button>
+    </div>
+
+    <div id="app-screen" class="app-box">
+        <div class="header-bar">
+            <h3>📦 Pengurusan Stok</h3>
+            <button onclick="logout()" style="width:auto; background:#c0392b; color:white; font-size:0.8rem; padding:8px 15px;">Keluar</button>
+        </div>
+
+        <div style="background:white; padding:20px; border-radius:10px; margin-bottom:20px;">
+            <input type="text" id="p-name" placeholder="Nama Produk">
+            <input type="text" id="p-desc" placeholder="Info (Cth: Manis)">
+            <div style="display:flex; gap:10px;">
+                <input type="number" id="p-price" placeholder="Harga (RM)">
+                <input type="text" id="p-unit" placeholder="Unit (kg/biji)">
+            </div>
+
+            <div class="upload-area" onclick="document.getElementById('file-input').click()">
+                📷 Klik Pilih Gambar (Auto-Resize)
+                <input type="file" id="file-input" accept="image/*" style="display:none" onchange="handleFile(this)">
+            </div>
+            <img id="preview-img" style="max-height:150px; display:none; margin:0 auto;">
+
+            <button class="btn-save" onclick="addProduct()">+ TAMBAH PRODUK</button>
+        </div>
+
+        <div id="status" style="text-align:center; color:#e67e22; font-weight:bold; display:none;">Sedang proses...</div>
+        <div id="product-list"></div>
+    </div>
+
+<script>
+    // --- SETTING ---
+    const GITHUB_USERNAME = "kamkikorich"; 
+    const REPO_NAME = "borneoHubFruit";    
+    const FILE_PATH = "stok.js";
+    // --------------
+
+    let products = [];
+    let fileSha = ""; 
+    let currentBase64 = ""; 
+
+    // Auto Login
+    if(sessionStorage.getItem('gh_token')) {
+        document.getElementById('github-token').value = sessionStorage.getItem('gh_token');
+        login();
+    }
+
+    function login() {
+        const token = document.getElementById('github-token').value.trim();
+        if(!token) return alert("Sila masukkan token!");
+        sessionStorage.setItem('gh_token', token);
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('app-screen').style.display = 'block';
+        loadFromGitHub();
+    }
+
+    function logout() {
+        sessionStorage.removeItem('gh_token');
+        window.location.href = "index.html"; // Balik ke kedai
+    }
+
+    // Proses Gambar
+    function handleFile(input) {
+        const file = input.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const img = new Image();
+            img.src = e.target.result;
+            img.onload = function() {
+                // Resize Image Logic
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                const MAX_WIDTH = 400; 
+                const scaleSize = MAX_WIDTH / img.width;
+                canvas.width = MAX_WIDTH;
+                canvas.height = img.height * scaleSize;
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                currentBase64 = canvas.toDataURL('image/jpeg', 0.7);
+                document.getElementById('preview-img').src = currentBase64;
+                document.getElementById('preview-img').style.display = 'block';
+            }
+        }
+        reader.readAsDataURL(file);
+    }
+
+    // GitHub Logic
+    async function loadFromGitHub() {
+        document.getElementById('status').style.display = 'block';
+        const token = sessionStorage.getItem('gh_token');
+        const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${REPO_NAME}/contents/${FILE_PATH}`;
+
+        try {
+            const response = await fetch(url, { headers: { 'Authorization': `token ${token}` } });
+            if(response.status === 404) { products = []; renderList(); return; }
+            
+            const data = await response.json();
+            fileSha = data.sha; 
+            
+            // Smart Parser
+            const rawContent = atob(data.content);
+            const firstBracket = rawContent.indexOf('[');
+            const lastBracket = rawContent.lastIndexOf(']');
+            if (firstBracket !== -1 && lastBracket !== -1) {
+                products = JSON.parse(rawContent.substring(firstBracket, lastBracket + 1));
+            } else { products = []; }
+            renderList();
+        } catch (err) { alert("Ralat: " + err.message); } 
+        finally { document.getElementById('status').style.display = 'none'; }
+    }
+
+    async function saveToGitHub() {
+        document.getElementById('status').style.display = 'block';
+        document.getElementById('status').innerText = "Sedang upload ke GitHub...";
+        
+        const token = sessionStorage.getItem('gh_token');
+        const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${REPO_NAME}/contents/${FILE_PATH}`;
+        const newContent = `const products = ${JSON.stringify(products, null, 4)};`;
+        const encodedContent = btoa(unescape(encodeURIComponent(newContent)));
+
+        const bodyData = { message: "Update stok", content: encodedContent };
+        if(fileSha) bodyData.sha = fileSha; 
+
+        try {
+            const response = await fetch(url, {
+                method: 'PUT',
+                headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(bodyData)
+            });
+            if(!response.ok) throw new Error("Gagal simpan");
+            const data = await response.json();
+            fileSha = data.content.sha;
+            alert("Berjaya!");
+            location.reload();
+        } catch (err) { alert(err.message); } 
+        finally { document.getElementById('status').style.display = 'none'; }
+    }
+
+    function renderList() {
+        document.getElementById('product-list').innerHTML = products.map((p, i) => `
+            <div class="product-item">
+                <div style="display:flex; align-items:center;">
+                    <img src="${p.img || ''}" class="thumb-img" onerror="this.style.display='none'">
+                    <div><strong>${p.name}</strong><br>RM ${p.price}</div>
+                </div>
+                <button onclick="delProduct(${i})" style="background:#c0392b; width:auto; padding:5px 10px; color:white; font-size:0.8rem;">Hapus</button>
+            </div>
+        `).join('');
+    }
+
+    function addProduct() {
+        const name = document.getElementById('p-name').value;
+        const price = document.getElementById('p-price').value;
+        if(!name || !price) return alert("Isi nama dan harga");
+
+        products.push({
+            id: Date.now(),
+            name, 
+            desc: document.getElementById('p-desc').value,
+            price: parseFloat(price),
+            unit: document.getElementById('p-unit').value,
+            img: currentBase64 || "" 
+        });
+        saveToGitHub();
+    }
+
+    function delProduct(i) { if(confirm("Padam?")) { products.splice(i, 1); saveToGitHub(); } }
+</script>
+</body>
+
+</html>
